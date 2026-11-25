@@ -1,0 +1,25 @@
+﻿name: sync-repo-metadata
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  metadata: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply repository topics and description
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api --method PUT "repos/${GH_REPO}/topics" \
+            --input '{"names":["dsh-plugin","deepseek-harness","dsh","live-window","whale","desktop","ui-skins","notch","companion"]}'
+          gh api --method PATCH "repos/${GH_REPO}" \
+            --field description='鲸梦实况窗独立插件：把 DSH 的会话进展、待审批请求、草稿与完成提醒投到桌面顶部的原生实况窗，并按渠道分派显示余额与费用。' \
+            --field homepage='https://github.com/a853154634/dsh-whale-live-window#readme'
