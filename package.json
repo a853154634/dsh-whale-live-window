@@ -1,11 +1,19 @@
 {
   "name": "dsh-whale-live-window",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "鲸梦实况窗独立插件：把 DSH 的会话进展、待审批请求、草稿与完成提醒投到桌面顶部的原生实况窗，并按渠道分派显示余额与费用。",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
   "icon": "./assets/icon.svg",
+  "homepage": "https://github.com/a853154634/dsh-whale-live-window#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a853154634/dsh-whale-live-window.git"
+  },
+  "bugs": {
+    "url": "https://github.com/a853154634/dsh-whale-live-window/issues"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client/index.js",
