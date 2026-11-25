@@ -1,0 +1,187 @@
+function DesktopCompanionSettings({ controller, state, tr }) {
+  const disabled = state.supported !== true || state.busy;
+  const chime = (0, import_react12.useRef)(null);
+  const [soundPreviewFailed, setSoundPreviewFailed] = (0, import_react12.useState)(false);
+  function stopSoundPreview() {
+    const active = chime.current;
+    if (!active) return;
+    chime.current = null;
+    active.request.abort();
+    void active.context.close().catch(() => {});
+  }
+  (0, import_react12.useEffect)(() => stopSoundPreview, []);
+  async function previewCompletionSound() {
+    if (chime.current) return;
+    setSoundPreviewFailed(false);
+    try {
+      const context = new AudioContext();
+      const request = new AbortController();
+      chime.current = { context, request };
+      const [response] = await Promise.all([fetch("/whale-dream/api", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method: "companion-sample" }), signal: request.signal,
+      }), context.resume()]);
+      if (!response.ok) throw Error("Completion sound unavailable");
+      const sample = await context.decodeAudioData(await response.arrayBuffer());
+      if (request.signal.aborted) return;
+      const source = context.createBufferSource();
+      source.buffer = sample;
+      source.connect(context.destination);
+      source.onended = stopSoundPreview;
+      source.start();
+    } catch (error) {
+      if (error.name !== "AbortError") setSoundPreviewFailed(true);
+      stopSoundPreview();
+    }
+  }
+  const motionLabel = tr("动效强度", "Motion");
+  const shapeLabel = tr("外观形状", "Window shape");
+  const collapsedLabel = tr("收起时显示", "Collapsed display");
+  const choices = (key, label, options, inactive = disabled) => (0, import_jsx_runtime12.jsx)("div", {
+    className: "wd-segment", role: "group", "aria-label": label,
+    children: options.map(([value, text]) => (0, import_jsx_runtime12.jsx)("button", {
+      type: "button", "aria-pressed": state[key] === value, disabled: inactive,
+      onClick: () => void controller.setPreference(key, value), children: text,
+    }, value)),
+  });
+  return (0, import_jsx_runtime12.jsxs)("div", { className: "wd-companion-settings", "data-testid": "desktop-companion-settings", children: [
+    (0, import_jsx_runtime12.jsx)("div", { className: "wd-companion-overview", children:
+      (0, import_jsx_runtime12.jsx)(Toggle, {
+        label: tr("显示实况窗", "Show Live Window"),
+        hint: tr("沿屏幕顶部左右拖动，也可移到其他显示器。悬停查看会话。", "Drag Live Window left or right along the top of the screen, or move it to another display. Hover to see conversations."),
+        checked: state.enabled,
+        disabled,
+        onChange: (enabled) => void controller.setPreference("enabled", enabled),
+      })
+    }),
+    (0, import_jsx_runtime12.jsxs)("div", { className: "wd-companion-options", children: [
+      (0, import_jsx_runtime12.jsxs)("div", { className: "wd-companion-motion", children: [
+        (0, import_jsx_runtime12.jsx)("span", { className: "wd-label", children: shapeLabel }),
+        choices("shape", shapeLabel, [["pill", tr("胶囊", "Capsule")], ["notch", tr("刘海", "Notch")], ["minimal", tr("极简刘海", "Minimal notch")]]),
+      ] }),
+      (0, import_jsx_runtime12.jsxs)("div", { className: "wd-companion-motion", children: [
+        (0, import_jsx_runtime12.jsxs)("span", { children: [
+          (0, import_jsx_runtime12.jsx)("span", { className: "wd-label", children: collapsedLabel }),
+          (0, import_jsx_runtime12.jsx)("span", { className: "wd-hint", children: state.shape === "minimal"
+            ? tr("极简刘海收起时用细线颜色提示状态。", "The minimal notch shows status using the line color when collapsed.")
+            : tr("自动随会话状态切换，空闲看余额，有新回复看会话和费用。", "Auto follows the session state: balance when idle, conversation and cost when a reply arrives.") }),
+        ] }),
+        choices("collapsedDisplay", collapsedLabel, [["amount", tr("自动", "Auto")], ["status", tr("状态", "Status")], ["title", tr("标题", "Title")], ["detail", tr("详情", "Details")]], disabled || state.shape === "minimal" || !state.showDetails),
+      ] }),
+      (0, import_jsx_runtime12.jsx)(Toggle, {
+        label: tr("自动收起", "Auto-collapse"),
+        hint: tr("鼠标移出后收起实况窗。", "Collapse Live Window when the pointer leaves."),
+        checked: state.autoCollapse,
+        disabled,
+        onChange: (enabled) => void controller.setPreference("autoCollapse", enabled),
+      }),
+      (0, import_jsx_runtime12.jsxs)("div", { className: "wd-companion-motion", children: [
+        (0, import_jsx_runtime12.jsxs)("span", { children: [
+          (0, import_jsx_runtime12.jsx)("span", { className: "wd-label", children: motionLabel }),
+          (0, import_jsx_runtime12.jsx)("span", { className: "wd-hint", children: tr("精简模式减少展开与流光动效。", "Reduced motion limits expansion and flowing light effects.") }),
+        ] }),
+        (0, import_jsx_runtime12.jsxs)("div", { className: "wd-segment", role: "group", "aria-label": motionLabel, children: [
+          (0, import_jsx_runtime12.jsx)("button", {
+            type: "button", "aria-pressed": !state.reducedMotion, disabled,
+            onClick: () => void controller.setPreference("reducedMotion", false), children: tr("标准", "Standard"),
+          }),
+          (0, import_jsx_runtime12.jsx)("button", {
+            type: "button", "aria-pressed": state.reducedMotion, disabled,
+            onClick: () => void controller.setPreference("reducedMotion", true), children: tr("精简", "Reduced"),
+          }),
+        ] }),
+      ] }),
+      (0, import_jsx_runtime12.jsxs)("div", { className: "wd-companion-audio", children: [
+        (0, import_jsx_runtime12.jsx)(Toggle, {
+          label: tr("完成提示音", "Completion sound"),
+          hint: tr("未查看的会话完成时响一声。", "Play one chime when an unseen conversation finishes."),
+          checked: state.completionSound,
+          disabled,
+          onChange: (enabled) => void controller.setPreference("completionSound", enabled),
+        }),
+        (0, import_jsx_runtime12.jsx)("button", { type: "button", className: "wd-button", disabled: state.supported !== true, onClick: previewCompletionSound,
+          children: tr("试听", "Play sample") }),
+        soundPreviewFailed && (0, import_jsx_runtime12.jsx)("span", { className: "wd-hint", role: "status",
+          children: tr("试听未能播放。", "Could not play the sample.") }),
+      ] }),
+      (0, import_jsx_runtime12.jsx)(Toggle, {
+        label: tr("完成闪烁提醒", "Flash on completion"),
+        hint: tr("完成后轻闪提示，查看对应会话后停止。", "Gently flash after completion until you view the conversation."),
+        checked: state.completionFlash,
+        disabled,
+        onChange: (enabled) => void controller.setPreference("completionFlash", enabled),
+      }),
+      (0, import_jsx_runtime12.jsx)(Toggle, {
+        label: tr("显示会话详情", "Show conversation details"),
+        hint: tr("关闭后隐藏回复预览、标题、模型和用量。", "Turn off to hide the reply preview, titles, models and usage."),
+        checked: state.showDetails,
+        disabled,
+        onChange: (enabled) => void controller.setPreference("showDetails", enabled),
+      }),
+    ] }),
+    state.error && (0, import_jsx_runtime12.jsxs)("p", { className: "wd-save-warning wd-companion-warning", role: "status", children: [
+      state.error === "load"
+        ? tr("暂时无法读取实况窗设置。", "Could not load Live Window settings.")
+        : state.error === "launch"
+          ? tr("实况窗启动失败。请关闭开关后重新开启。", "Live Window could not start. Turn it off, then turn it on again.")
+          : tr("实况窗设置未生效，请重试。", "Could not update Live Window settings. Please retry."),
+      state.error === "load" && (0, import_jsx_runtime12.jsx)("button", {
+        type: "button", className: "wd-button", disabled: state.busy,
+        onClick: () => void controller.load(), children: tr("重试", "Retry"),
+      }),
+    ] }),
+  ] });
+}
+var companionSettingsCss = `
+.wd-project-actions{flex:none;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;padding-top:2px}
+.wd-project-actions .wd-project-link{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;padding:6px 10px;border:1px solid var(--wd-line);border-radius:9px;background:color-mix(in srgb,var(--wd-surface) 56%,transparent);color:var(--wd-ink);text-decoration:none;font-size:12px;font-weight:550;white-space:nowrap}
+.wd-project-actions .wd-project-tip{background:color-mix(in srgb,var(--wd-accent) 12%,var(--wd-surface));border-color:color-mix(in srgb,var(--wd-accent) 30%,var(--wd-line))}
+.wd-project-actions .wd-project-link:hover{border-color:var(--wd-accent)}
+.wd-project-actions svg,.wd-project-credits svg{width:15px;height:15px;flex:none}
+.wd-project-actions a:focus-visible,.wd-project-credits a:focus-visible{outline:2px solid var(--wd-accent);outline-offset:3px}
+.wd-settings-heading[data-project=true]{align-items:flex-start;flex-wrap:wrap}
+.wd-settings-heading[data-project=true]>div:first-child{flex:1 1 260px;min-width:0}
+.wd-settings-heading[data-project=true]>.wd-save-state{flex-basis:100%}
+.wd-settings-heading[data-project=true]>.wd-save-state:empty{display:none}
+.wd-tip-dialog{position:fixed;inset:0;width:min(455px,calc(100% - 28px));max-height:calc(100dvh - 28px);padding:0;margin:auto;border:1px solid var(--wd-line);border-radius:16px;color:var(--wd-ink);background:var(--wd-surface);box-shadow:0 24px 70px #0006;overflow:auto}
+.wd-tip-dialog::backdrop{background:rgba(9,13,22,.64)}
+.wd-tip-body{padding:22px;display:grid;gap:16px;background:radial-gradient(ellipse at 10% 0%,color-mix(in srgb,var(--wd-accent) 12%,transparent),transparent 70%)}
+.wd-tip-heading{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.wd-tip-heading h3{font-size:19px;letter-spacing:-.02em;margin:0}
+.wd-tip-body p{margin:0;font-size:13px;color:var(--wd-muted);line-height:1.65}
+.wd-tip-heading .wd-tip-close{display:grid;place-items:center;width:32px;height:32px;padding:0;border:1px solid var(--wd-line);border-radius:8px;background:color-mix(in srgb,var(--wd-muted) 7%,transparent);color:var(--wd-ink)}
+.wd-tip-heading .wd-tip-close:hover{border-color:var(--wd-accent)}
+.wd-tip-codes{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,168px),1fr));gap:12px}
+.wd-tip-codes figure{display:grid;justify-items:center;gap:8px;margin:0;padding:10px;border:1px solid var(--wd-line);border-radius:12px;background:color-mix(in srgb,var(--wd-muted) 7%,transparent)}
+.wd-tip-codes img{display:block;width:100%;max-width:178px;aspect-ratio:1;object-fit:contain;border-radius:7px;background:white}
+.wd-tip-codes figcaption{font-size:12px;font-weight:550}
+.wd-project-credits{border-top:1px solid var(--wd-line);padding-top:16px;min-width:0}
+.wd-project-credits h3{font-size:13px;margin:0}
+.wd-project-credits p{font-size:12px;color:var(--wd-muted);margin:4px 0 10px}
+.wd-project-credits ul{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr));gap:7px;list-style:none;padding:0;margin:0}
+.wd-project-credits a{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 6px;align-items:center;padding:7px 9px;border:1px solid var(--wd-line);border-radius:8px;color:var(--wd-ink);text-decoration:none;font-size:12px;overflow-wrap:anywhere}
+.wd-project-credits a:hover{border-color:var(--wd-accent)}
+.wd-project-credits a small{grid-column:1;color:var(--wd-muted);font-size:11px}
+.wd-project-credits a svg{grid-column:2;grid-row:1/span 2;color:var(--wd-muted)}
+@container wd-settings (max-width:510px){.wd-project-actions{justify-content:flex-start}.wd-settings-heading[data-project=true]>div:first-child{flex-basis:100%}}
+.wd-primary-nav[data-companion=true]{grid-template-columns:repeat(4,minmax(0,1fr))}
+.wd-primary-nav[data-companion=true]>button{line-height:1.25;overflow-wrap:anywhere}
+.wd-companion-settings{display:grid;gap:14px;container:wd-companion/inline-size}
+.wd-companion-overview,.wd-companion-options{border:1px solid var(--wd-line);border-radius:15px;background:color-mix(in srgb,var(--wd-palette-composer,var(--wd-surface)) 72%,transparent)}
+.wd-companion-overview{padding:18px 16px;min-width:0;background:radial-gradient(ellipse at 92% 0%,color-mix(in srgb,var(--wd-palette-accent,var(--wd-accent)) 12%,transparent),transparent 74%),color-mix(in srgb,var(--wd-palette-composer,var(--wd-surface)) 78%,transparent)}
+.wd-companion-overview>.wd-toggle-row{gap:14px;min-width:0}
+.wd-companion-overview .wd-label{font-size:15px;font-weight:650;color:var(--wd-palette-text,var(--wd-ink))}
+.wd-companion-options{display:grid;min-width:0}
+.wd-companion-options>.wd-toggle-row,.wd-companion-motion{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;min-height:57px}
+.wd-companion-audio{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:12px 16px;min-width:0}
+.wd-companion-audio>.wd-toggle-row{flex:1 1 185px;min-width:0;gap:12px}
+.wd-companion-audio>.wd-hint{flex-basis:100%}
+.wd-companion-options>*+*{border-top:1px solid var(--wd-line)}
+.wd-companion-settings .wd-hint{display:block;margin-top:3px;max-width:32ch}
+.wd-companion-overview .wd-hint{max-width:none}
+.wd-companion-settings :is(input,button):disabled{cursor:default;opacity:.65}
+.wd-companion-settings :is(input,button):focus-visible{outline-offset:2px}
+.wd-companion-motion .wd-segment{flex:none}
+.wd-companion-settings .wd-companion-warning{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0}
+@container wd-companion (max-width:380px){.wd-companion-motion{flex-wrap:wrap}.wd-companion-motion .wd-segment{flex:0 1 auto;max-width:100%}}
+`;

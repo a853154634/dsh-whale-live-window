@@ -1,0 +1,830 @@
+function createDesktopCompanionController(ctx) {
+  const sessions = ctx.get("sessions");
+  const list = sessions?.list;
+  const workspaces = ctx.get("workspaces")?.list;
+  const mainPanel = ctx.get("layout")?.panelInfo;
+  const models = ctx.get("modelDirectories");
+  const modelCatalog = models?.catalog?.store;
+  const workspace = ctx.get("uiWorkspace");
+  const uiSession = ctx.get("uiSession");
+  const listeners = new Set();
+  const pendingReplies = new Set();
+  const consumedReplies = new Set();
+  const activeInteractions = new Set();
+  const openedNavigation = new Map();
+  const lifetime = new AbortController();
+  const clientId = window.crypto.randomUUID?.() ?? Array.from(window.crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const maxCommandLine = 32 * 1024;
+  const maxReply = 4000;
+  const composerDrafts = new Map();
+  let draftFocus = "";
+  let draftLease = "";
+  let draftGeneration = 0;
+  let state = {
+    supported: null, enabled: false, autoCollapse: true, reducedMotion: false, showDetails: true,
+    shape: "pill", collapsedDisplay: "amount", completionSound: false, completionFlash: true, busy: false, error: "",
+  };
+  let enabledLifetime = null;
+  let releaseList, releaseWorkspaces, releasePanel, releaseModel, releaseCatalog, releaseTheme, releaseConnectionReset;
+  let modelStore, viewId = "";
+  let namedGroups;
+  const modelNames = new Map();
+  let viewTimer = 0, retryTimer = 0, retryCount = 0;
+  let viewInFlight = false, viewDirty = false, lastView = "", nextViewAt = 0;
+  let themeTimer = 0, themeInFlight = false, themeDirty = false, lastTheme = "";
+  let stream = null;
+  let pendingSession = null;
+  let interactionFocus = "", interactionKey = "", interactionRevision = 0;
+  let releaseInteractions, releaseCarrier;
+  let watchedCarrier;
+
+  function publish(update) {
+    if (lifetime.signal.aborted) return;
+    state = { ...state, ...update };
+    for (const listener of listeners) listener();
+  }
+
+  function request(method, payload, signal) {
+    return window.fetch("/whale-dream/api", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method, ...payload }),
+      signal,
+    });
+  }
+
+  function bindModel(id) {
+    let store;
+    if (id) {
+      try {
+        store = models?.directoryFor(id)?.store;
+      } catch {
+        // The session can be removed between reading the catalog and resolving its store.
+      }
+    }
+    if (modelStore === store) return;
+    releaseModel?.();
+    modelStore = store;
+    releaseModel = store?.subscribe(queueView);
+  }
+
+  function indexModelNames(groups) {
+    if (groups === namedGroups) return;
+    namedGroups = groups;
+    modelNames.clear();
+    for (const group of groups ?? []) {
+      modelNames.set(group.id, new Map(group.models.map(model => [model.id, model.name])));
+    }
+  }
+
+  function exactModelRoute(candidate) {
+    const exactId = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max &&
+      value === value.trim() && value === value.toWellFormed() && !/[\x00-\x1f\x7f]/.test(value);
+    return exactId(candidate?.provider, 200) && exactId(candidate?.model, 512) ? candidate : undefined;
+  }
+
+  function readView() {
+    const snapshot = list?.getSnapshot();
+    const catalog = snapshot?.byId ?? {};
+    const statuses = uiSession?.sessionStatus?.getSnapshot();
+    const workspaceSnapshot = workspaces?.getSnapshot();
+    const archivedIds = workspaceSnapshot?.archivedSessionIds ?? [];
+    const archived = new Set(archivedIds);
+    const pinned = new Set(workspaceSnapshot?.pinnedSessionIds ?? []);
+    const eligible = (id) => Object.hasOwn(catalog, id) && catalog[id].origin !== "subagent" && !archived.has(id);
+    const ids = (snapshot?.ids ?? Object.keys(catalog)).filter(eligible);
+    /* 【本插件改动】选中的会话不再强依赖 retainedBy.mainView。
+     *
+     * 原版只挑「主窗口还保留着」的会话。任务结束、或主窗口切到别的会话后，
+     * 这个条件对刚才那个会话不再成立，id 退化成 ""——实况窗于是既没有 active，
+     * 也把它从 rows 里漏掉，表现就是「任务完成后会话栏消失」。
+     *
+     * 回退顺序：主窗口保留的 → 最近更新的 → 任意一个。这样实况窗始终至少有一个
+     * 可展示/可切换的会话，而不是整条栏空掉。
+     */
+    const byMainView = (key) => (catalog[key]?.retainedBy?.mainView ?? 0) > 0;
+    const freshest = (keys) => keys.slice().sort((a, b) =>
+      (catalog[b]?.updatedAt ?? 0) - (catalog[a]?.updatedAt ?? 0))[0] ?? "";
+    const id = eligible(viewId) && byMainView(viewId) ? viewId
+      : ids.find(byMainView) ?? freshest(ids.filter(eligible)) ?? ids.find(eligible) ?? "";
+    viewId = id;
+    bindModel(state.showDetails ? id : "");
+    const directory = modelStore?.getSnapshot();
+    const modelCatalogValue = state.showDetails ? modelCatalog?.getSnapshot()?.value : undefined;
+    // The selector matches provider and model IDs in this catalog, then shows the model's name.
+    indexModelNames(modelCatalogValue?.groups ?? directory?.groups);
+    function describe(key, currentSelection) {
+      const row = catalog[key];
+      const status = statuses?.get(key);
+      const updatedAt = Number.isFinite(row?.updatedAt) && row.updatedAt > 0 ? row.updatedAt : 0;
+      const attributes = {
+        id: key, updatedAt, pinned: pinned.has(key), running: (status?.running ?? row?.running) === true,
+        waiting: Boolean(status?.pendingInteraction), completionUnread: status?.completionUnread === true,
+      };
+      if (!state.showDetails) return { ...attributes, title: "", model: "", provider: "" };
+      const projection = snapshot?.projectionsBySession?.[key]?.values?.modelSelection ?? row?.projectionValues?.modelSelection;
+      // The DSH picker chooses the projected next route or the configured default;
+      // a last-used route is only a fallback while that selector is unresolved.
+      const selection = exactModelRoute(currentSelection) ?? exactModelRoute(projection?.next) ??
+        exactModelRoute(modelCatalogValue?.default) ?? exactModelRoute(projection?.lastUsed);
+      const modelLabel = modelNames.get(selection?.provider)?.get(selection?.model);
+      return {
+        ...attributes,
+        title: typeof row?.displayTitle === "string" ? row.displayTitle.slice(0, 120) : "",
+        model: selection?.model ?? "",
+        modelLabel: typeof modelLabel === "string" ? modelLabel.slice(0, 120) : "",
+        provider: selection?.provider ?? "",
+      };
+    }
+    const active = describe(id, directory?.current);
+    const rows = ids.filter((key) => key !== id).map((key) => describe(key))
+      .filter((row) => !catalog[row.id].blank || row.running || row.waiting || row.completionUnread || row.pinned)
+      .sort((a, b) => Number(b.completionUnread) - Number(a.completionUnread) || Number(b.waiting) - Number(a.waiting) ||
+        Number(b.running) - Number(a.running) || Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
+      .slice(0, 100);
+    const viewed = document.visibilityState === "visible" && document.hasFocus() && mainPanel?.getSnapshot()?.activePanelId == null;
+    return { ...active, rows, viewed, clientId, archivedIds };
+  }
+
+  function queueView() {
+    if (!enabledLifetime) return;
+    viewDirty = true;
+    if (viewTimer || viewInFlight) return;
+    viewTimer = window.setTimeout(() => void sendView(), Math.max(0, nextViewAt - Date.now()));
+  }
+
+  async function sendView() {
+    viewTimer = 0;
+    const current = enabledLifetime;
+    if (!current) return;
+    viewDirty = false;
+    nextViewAt = Date.now() + 100;
+    const view = readView();
+    const key = JSON.stringify(view);
+    if (key === lastView) return;
+    viewInFlight = true;
+    try {
+      const signal = AbortSignal.any([current.signal, AbortSignal.timeout(4000)]);
+      const response = await request("companion-view", view, signal);
+      if (response.ok && current === enabledLifetime) lastView = key;
+    } catch {
+      // A later catalog change, refocus or reconnect will re-submit the current view.
+    } finally {
+      if (current === enabledLifetime) {
+        viewInFlight = false;
+        if (viewDirty) queueView();
+      }
+    }
+  }
+
+  function queueTheme() {
+    if (!enabledLifetime) return;
+    themeDirty = true;
+    if (themeInFlight || themeTimer) return;
+    themeTimer = window.setTimeout(() => void sendTheme(), 80);
+  }
+
+  async function sendTheme() {
+    themeTimer = 0;
+    const current = enabledLifetime;
+    if (!current) return;
+    themeDirty = false;
+    const resolved = appearance.getSnapshot();
+    const palette = resolved?.effectivePalette;
+    if (!resolved?.ready || !palette) return;
+    const scheme = resolved.colorScheme === "light" ? "light" : "dark";
+    const colors = [palette.accent, palette.composer, palette.text];
+    if (colors.some((value) => !/^#[a-f0-9]{6}$/i.test(value))) return;
+    const [accent, surface, foreground] = colors.map((color) => color.slice(1).toLowerCase());
+    const key = `${scheme}:${accent}:${surface}:${foreground}`;
+    if (key === lastTheme) return;
+    themeInFlight = true;
+    try {
+      const signal = AbortSignal.any([current.signal, AbortSignal.timeout(4000)]);
+      const response = await request("companion-theme", { scheme, accent, surface, foreground }, signal);
+      if (response.ok && current === enabledLifetime) lastTheme = key;
+    } catch {
+      // Theme changes or refocus can resume a temporarily unavailable connection.
+    } finally {
+      if (current === enabledLifetime) {
+        themeInFlight = false;
+        if (themeDirty) queueTheme();
+      }
+    }
+  }
+
+  function eligibleSession(id) {
+    const catalog = list?.getSnapshot()?.byId ?? {};
+    if (!Object.hasOwn(catalog, id) || catalog[id].origin === "subagent" || workspaces?.getSnapshot()?.archivedSessionIds?.includes(id)) return null;
+    return catalog[id];
+  }
+
+  function interactionAccess(id) {
+    if (!eligibleSession(id) || !uiSession?.whenAccess) return false;
+    let allowed = false;
+    try {
+      uiSession.whenAccess(id, "session/prompt", () => { allowed = true; return () => {}; })();
+    } catch { return false; }
+    return allowed;
+  }
+
+  function composerDraft(entry) {
+    const input = entry.input;
+    if (!input || !eligibleSession(entry.id) || !interactionAccess(entry.id)) return null;
+    const snapshot = input.state.getSnapshot();
+    const uploads = entry.conversation.fileUploads.getSnapshot();
+    const key = JSON.stringify([snapshot.draftRev, snapshot.attachmentIds]);
+    if (key !== entry.key) {
+      entry.key = key;
+      entry.revision++;
+    }
+    const text = snapshot.draft;
+    const attachments = entry.conversation.resolveDraftAttachments(snapshot.attachmentIds.slice(0, 12)).map(item => ({
+      id: item.id, kind: item.kind,
+      name: (item.file.name || (item.kind === "image" ? "图片" : "附件")).slice(0, 180).toWellFormed(),
+      status: uploads[item.id]?.status ?? "ready",
+      size: item.file.size,
+    }));
+    const session = entry.reference.binding.session.getSnapshot();
+    const editable = snapshot.phase === "plain" && !session.removed && session.subagent === null &&
+      !entry.block?.getSnapshot() && text.length <= maxReply && snapshot.attachmentIds.length <= 12 &&
+      !snapshot.occurrences.length && !input.draftSnapshot?.quotes?.length;
+    return {
+      id: entry.id, revision: clientId + ":" + entry.generation + ":" + entry.revision,
+      text: text.slice(0, maxReply).toWellFormed(), editable, attachments,
+    };
+  }
+
+  function releaseComposerDraft(entry) {
+    if (composerDrafts.get(entry.id) !== entry) return;
+    composerDrafts.delete(entry.id);
+    window.clearTimeout(entry.timer);
+    entry.releases.forEach(drop => drop());
+    entry.reference.release();
+  }
+
+  function pruneComposerDrafts() {
+    for (const entry of composerDrafts.values()) {
+      const draft = entry.input?.state.getSnapshot();
+      if (!eligibleSession(entry.id) || (entry.id !== draftFocus && !entry.busy && !draft?.draft && !draft?.attachmentIds.length)) {
+        releaseComposerDraft(entry);
+      }
+    }
+  }
+
+  function publishComposerDraft(entry) {
+    if (entry.id !== draftFocus || !enabledLifetime || entry.timer) return;
+    entry.timer = window.setTimeout(() => {
+      entry.timer = 0;
+      if (entry.id !== draftFocus || !enabledLifetime || composerDrafts.get(entry.id) !== entry) return;
+      const draft = composerDraft(entry);
+      if (!draft) return;
+      const key = JSON.stringify(draft);
+      if (key === entry.posted) return;
+      entry.posted = key;
+      const signal = AbortSignal.any([enabledLifetime.signal, AbortSignal.timeout(4000)]);
+      void request("companion-draft-state", {
+        id: entry.id, clientId, lease: draftLease, draft: { ...draft, sequence: ++entry.sent },
+      }, signal).then(response => {
+        if (!response.ok && entry.posted === key) entry.posted = "";
+      }).catch(() => { if (entry.posted === key) entry.posted = ""; });
+    }, 24);
+  }
+
+  function watchComposerDraft(id, lease) {
+    draftFocus = typeof id === "string" && id.length <= 256 ? id : "";
+    draftLease = typeof lease === "string" ? lease : "";
+    pruneComposerDrafts();
+    if (!draftFocus || !draftLease || !enabledLifetime || !eligibleSession(draftFocus) || !interactionAccess(draftFocus)) return;
+    const existing = composerDrafts.get(draftFocus);
+    if (existing) {
+      existing.posted = "";
+      publishComposerDraft(existing);
+      return;
+    }
+    if (!sessions?.retain || composerDrafts.size >= 8) return;
+    const conversation = ctx.get("conversation");
+    if (!conversation?.input?.for || !conversation?.createDrafts || !conversation?.resolveDraftAttachments ||
+        !conversation?.releaseDraftAttachment || !conversation?.fileUploads?.subscribe) return;
+    let reference;
+    try {
+      reference = sessions.retain(draftFocus, { source: "whaleLiveWindow" });
+    } catch { return; }
+    const entry = {
+      id: draftFocus, reference, conversation, input: undefined, releases: [], timer: 0,
+      generation: ++draftGeneration, revision: 0, sent: 0, key: "", posted: "", busy: false,
+    };
+    composerDrafts.set(entry.id, entry);
+    void reference.ready.then(binding => {
+      if (composerDrafts.get(entry.id) !== entry || !enabledLifetime || !eligibleSession(entry.id)) return;
+      entry.input = conversation.input.for(binding.ctx);
+      entry.block = conversation.blocks?.storeFor(entry.id);
+      const changed = () => {
+        if (entry.id === draftFocus) publishComposerDraft(entry);
+        else pruneComposerDrafts();
+      };
+      entry.releases.push(entry.input.state.subscribe(changed), conversation.fileUploads.subscribe(changed));
+      if (entry.block) entry.releases.push(entry.block.subscribe(changed));
+      publishComposerDraft(entry);
+    }).catch(() => releaseComposerDraft(entry));
+  }
+
+  async function fetchComposerFiles(files, signal) {
+    const mime = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+    const output = [];
+    for (const file of files) {
+      const response = await request("companion-draft-file", { clientId, key: file.key }, signal);
+      if (!response.ok) throw Error("附件不可读，请重新选择文件。");
+      // A Blob lets Chromium use its backing store instead of copying bytes through a JS ArrayBuffer.
+      const data = await response.blob();
+      const extension = file.name.split(".").at(-1).toLowerCase();
+      output.push(new File([data], file.name, { type: Object.hasOwn(mime, extension) ? mime[extension] : "application/octet-stream" }));
+    }
+    return output;
+  }
+
+  function submitComposerDraft(entry, signal) {
+    const input = entry.input;
+    const original = input.state.getSnapshot();
+    return new Promise(resolve => {
+      let timer;
+      let release;
+      const finish = success => {
+        release?.();
+        window.clearTimeout(timer);
+        signal.removeEventListener("abort", aborted);
+        resolve(success);
+      };
+      const aborted = () => finish(false);
+      const check = () => {
+        const now = input.state.getSnapshot();
+        if (now.phase !== "plain" && now.phase !== "claimed") return;
+        if (now === original) return;
+        finish(!now.draft && !now.attachmentIds.length);
+      };
+      release = input.state.subscribe(check);
+      signal.addEventListener("abort", aborted, { once: true });
+      timer = window.setTimeout(aborted, 18000);
+      try {
+        input.submit("queue", "click");
+        if (input.state.getSnapshot() === original) finish(false);
+      } catch { finish(false); }
+    });
+  }
+
+  async function changeComposerDraft(command, current) {
+    const { id, requestId, lease, action, revision, text, attachmentId, files } = command;
+    if (typeof requestId !== "string" || requestId.length > 128 || consumedReplies.has(requestId)) return;
+    consumedReplies.add(requestId);
+    if (consumedReplies.size > 256) consumedReplies.delete(consumedReplies.values().next().value);
+    const entry = composerDrafts.get(id);
+    const before = entry && composerDraft(entry);
+    let error = "";
+    let ownsEntry = false;
+    const changeText = action === "text" || action === "submit";
+    try {
+      if (!entry || entry.busy || id !== draftFocus || lease !== draftLease || !before?.editable || changeText && revision !== before.revision) {
+        throw Error("草稿已更新或需在主界面处理。");
+      }
+      if (changeText && text !== undefined && (typeof text !== "string" || text.length > maxReply)) throw Error("草稿内容太长。");
+      entry.busy = true;
+      ownsEntry = true;
+      const { conversation, input } = entry;
+      const signal = action === "add" ? current.signal : AbortSignal.any([current.signal, AbortSignal.timeout(20000)]);
+      if (action === "add") {
+        if (!Array.isArray(files) || !files.length || files.length > 8) throw Error("附件内容无效。");
+        const next = await fetchComposerFiles(files, signal);
+        const live = composerDraft(entry);
+        if (signal.aborted || !live?.editable || id !== draftFocus || lease !== draftLease || live.attachments.length + next.length > 12) {
+          throw Error("会话已切换或附件已满。");
+        }
+        const staged = conversation.createDrafts(id, next, true);
+        if (!input.addAttachments(staged.map(item => item.id))) {
+          for (const item of staged) conversation.releaseDraftAttachment(item.id);
+          throw Error("会话暂时无法添加附件。");
+        }
+      } else if (action === "remove") {
+        if (!input.removeAttachment(attachmentId)) throw Error("附件已移除或正在发送。");
+        conversation.releaseDraftAttachment(attachmentId);
+      } else if (changeText) {
+        if (action === "submit") {
+          const session = entry.reference.binding.session.getSnapshot();
+          if (session.running || session.awaitingFirstTurn || session.pendingSubmissions?.length ||
+              before.attachments.some(item => item.status !== "ready")) throw Error("请等当前回复和附件上传完成。");
+        }
+        if (text !== undefined && text !== before.text) input.setDraft(text);
+        if (action === "submit") {
+          const next = input.state.getSnapshot();
+          if ((!next.draft.trim() && !next.attachmentIds.length) || !await submitComposerDraft(entry, signal)) {
+            throw Error("未能发送，草稿仍可在主界面查看。");
+          }
+        }
+      } else throw Error("草稿操作无效。");
+    } catch (err) {
+      error = err instanceof Error ? err.message : "草稿操作未完成。";
+    } finally {
+      if (ownsEntry) entry.busy = false;
+    }
+    try {
+      const signal = AbortSignal.any([current.signal, AbortSignal.timeout(4000)]);
+      const draft = entry && composerDraft(entry);
+      await request("companion-draft-result", {
+        id, clientId, requestId, lease, ok: !error, error, draft: draft && { ...draft, sequence: ++entry.sent },
+      }, signal);
+    } catch { /* The original operation is not safe to replay. */ }
+    if (entry) publishComposerDraft(entry);
+    pruneComposerDrafts();
+  }
+
+  function currentInteraction(id) {
+    const interaction = eligibleSession(id) ? uiSession?.sessionStatus?.getSnapshot()?.get(id)?.pendingInteraction : null;
+    return interaction?.sessionId === id ? interaction : null;
+  }
+
+  function refreshInteraction() {
+    const current = enabledLifetime;
+    const id = interactionFocus;
+    if (!current || !id) return;
+    const carrier = currentInteraction(id);
+    if (watchedCarrier !== carrier) {
+      releaseCarrier?.();
+      watchedCarrier = carrier;
+      releaseCarrier = carrier?.subscribe?.(refreshInteraction);
+    }
+    const definition = liveInteractionDefinition(carrier);
+    const interaction = definition && interactionAccess(id) ? definition.card : null;
+    const key = JSON.stringify(interaction);
+    if (interactionKey === key) return;
+    interactionKey = key;
+    const revision = ++interactionRevision;
+    const signal = AbortSignal.any([current.signal, AbortSignal.timeout(5000)]);
+    void request("companion-interaction", { id, clientId, revision, interaction }, signal).then(response => {
+      if (!response.ok && interactionFocus === id && interactionRevision === revision) interactionKey = "";
+    }).catch(() => { if (interactionFocus === id && interactionRevision === revision) interactionKey = ""; });
+  }
+
+  function watchInteraction(id) {
+    releaseCarrier?.();
+    releaseCarrier = undefined;
+    watchedCarrier = undefined;
+    interactionFocus = typeof id === "string" && id.length <= 256 ? id : "";
+    interactionKey = "";
+    refreshInteraction();
+  }
+
+  async function submitInteraction({ id, key, requestId, decision, answers }, current) {
+    if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128 || consumedReplies.has(requestId)) return;
+    consumedReplies.add(requestId);
+    if (consumedReplies.size > 256) consumedReplies.delete(consumedReplies.values().next().value);
+    let error = "请求已失效，或无权限处理。";
+    const carrier = id === interactionFocus && currentInteraction(id);
+    if (!current.signal.aborted && carrier && carrier.key === key && !activeInteractions.has(carrier) && interactionAccess(id)) {
+      const definition = liveInteractionDefinition(carrier);
+      if (definition) {
+        const isQuestion = definition.card.kind === "question";
+        const skip = definition.card.skip;
+        const supportedDecision = decision === "allow" || decision === "reject" ||
+          (decision === "skip" && ["approvalQuestion", "planChoice"].includes(skip)) ||
+          (decision === "revise" && skip === "revise");
+        const value = isQuestion ? liveQuestionAnswers(definition.card.questions, answers) : supportedDecision ? decision : null;
+        if (value === null) error = "请填写完整的答案或选择操作。";
+        else {
+          activeInteractions.add(carrier);
+          try {
+            await definition.settle(value);
+            error = "";
+          } catch {
+            error = "DSH 未接受该操作，请查看请求是否仍待处理。";
+          } finally { activeInteractions.delete(carrier); }
+        }
+      }
+    }
+    try {
+      const signal = AbortSignal.any([current.signal, AbortSignal.timeout(4000)]);
+      await request("companion-interaction-result", { clientId, requestId, ok: !error, error }, signal);
+    } catch { /* A lost receipt never retries the human's decision. */ }
+    refreshInteraction();
+  }
+
+  function openPendingSession() {
+    if (!pendingSession) return;
+    if (pendingSession.expires <= Date.now()) {
+      pendingSession = null;
+      return;
+    }
+    const { id, requestId } = pendingSession;
+    if (!eligibleSession(id)) return;
+    pendingSession = null;
+    try {
+      workspace.openSession(id);
+    } catch {
+      // The session can be removed while the desktop window is being restored.
+      return;
+    }
+    openedNavigation.set(requestId, id);
+    if (openedNavigation.size > 32) openedNavigation.delete(openedNavigation.keys().next().value);
+    acknowledgeNavigation(id, requestId);
+  }
+
+  function acknowledgeNavigation(id, requestId) {
+    const current = enabledLifetime;
+    if (!current) return;
+    const signal = AbortSignal.any([current.signal, AbortSignal.timeout(4000)]);
+    void request("companion-navigation-result", { clientId, id, requestId }, signal).catch(() => {});
+  }
+
+  function receiveNavigation(command) {
+    const { id, requestId, expires } = command;
+    if (typeof id !== "string" || !id || id.length > 256 || typeof requestId !== "string" ||
+        !/^[a-f0-9-]{36}$/.test(requestId) || !Number.isFinite(expires) || expires <= Date.now()) return;
+    const opened = openedNavigation.get(requestId);
+    if (opened) {
+      if (opened === id) acknowledgeNavigation(id, requestId);
+      return;
+    }
+    pendingSession = { id, requestId, expires };
+    openPendingSession();
+  }
+
+  async function submitReply({ id, text, requestId }, current) {
+    if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128 || consumedReplies.has(requestId)) return;
+    consumedReplies.add(requestId);
+    if (consumedReplies.size > 256) consumedReplies.delete(consumedReplies.values().next().value);
+    let error = "";
+    const validId = typeof id === "string" && id.length > 0 && id.length <= 256;
+    if (!validId || typeof text !== "string" || !text.trim() || text.length > maxReply) {
+      error = "请输入 1 至 4000 个字符。";
+    } else if (pendingReplies.has(id)) {
+      error = "上一条回复正在发送。";
+    } else {
+      pendingReplies.add(id);
+      try {
+        const initial = eligibleSession(id);
+        if (!initial) {
+          error = "该会话已归档或无法访问。";
+        } else if (initial.running) {
+          error = "该会话正在思考，请稍后回复。";
+        } else if (!sessions?.using || !uiSession?.whenAccess) {
+          error = "当前 DSH 会话服务无法发送。";
+        } else {
+          await sessions.using(id, { source: "whaleLiveWindow", signal: current.signal }, (reference) => {
+            const row = eligibleSession(id);
+            const { ctx: scope, session } = reference.binding;
+            const snapshot = session.getSnapshot();
+            if (!row || snapshot.removed || snapshot.subagent || current.signal.aborted) {
+              error = "该会话已归档或无法访问。";
+              return;
+            }
+            if (row.running || snapshot.running || snapshot.awaitingFirstTurn || snapshot.pendingSubmissions?.length) {
+              error = "该会话正在思考或发送，请稍后回复。";
+              return;
+            }
+            if (snapshot.openState !== "open" || (row.blank && !workspaces?.getSnapshot()?.items?.some((item) => item.sessionIds?.includes(id)))) {
+              error = "请先在 DSH 主界面打开会话并选择工作区。";
+              return;
+            }
+            let allowed = false;
+            uiSession.whenAccess(id, "session/prompt", () => {
+              allowed = true;
+              return () => {};
+            })();
+            const conversation = scope.get("conversation");
+            if (!allowed || !conversation?.send) {
+              error = "当前会话没有发送权限。";
+              return;
+            }
+            if (conversation.blocks.storeFor(id).getSnapshot()) {
+              error = "请先在主界面处理当前会话的输入提示。";
+              return;
+            }
+            return conversation.send(text);
+          });
+        }
+      } catch {
+        error = "发送状态未确认，请先到 DSH 查看。";
+      } finally {
+        pendingReplies.delete(id);
+      }
+    }
+    try {
+      const signal = AbortSignal.any([current.signal, AbortSignal.timeout(4000)]);
+      await request("companion-result", { clientId, requestId, ok: !error, error }, signal);
+    } catch {
+      // A lost receipt must not cause a second submission.
+    }
+    queueView();
+  }
+
+  async function receiveCommands() {
+    if (!enabledLifetime || stream || !workspace) return;
+    const connection = new AbortController();
+    stream = connection;
+    const initialTimeout = window.setTimeout(() => connection.abort(), 4000);
+    try {
+      const response = await request("companion-events", { clientId }, connection.signal);
+      window.clearTimeout(initialTimeout);
+      if (!response.ok || !response.body) return;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = "";
+      try {
+        while (!connection.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done || connection.signal.aborted) break;
+          pending += decoder.decode(value, { stream: true });
+          let newline;
+          while ((newline = pending.indexOf("\n")) !== -1) {
+            const line = pending.slice(0, newline);
+            pending = pending.slice(newline + 1);
+            if (!line || line.length > maxCommandLine) continue;
+            try {
+              const command = JSON.parse(line);
+              if (command?.enabled === false) {
+                configure(false);
+                publish({ enabled: false, error: "" });
+                break;
+              }
+              if (command?.error === "launch") publish({ error: "launch" });
+              if (command?.type === "reply" && enabledLifetime) {
+                void submitReply(command, enabledLifetime);
+              } else if (command?.type === "interaction" && enabledLifetime) {
+                void submitInteraction(command, enabledLifetime);
+              } else if (command?.type === "watch-interaction") {
+                watchInteraction(command.id);
+              } else if (command?.type === "watch-draft") {
+                watchComposerDraft(command.id, command.lease);
+              } else if (command?.type === "draft" && enabledLifetime) {
+                void changeComposerDraft(command, enabledLifetime);
+              } else if (command?.type === "new") {
+                pendingSession = null;
+                workspace.startSession();
+              } else if (command?.type === "open") {
+                retryCount = 0;
+                receiveNavigation(command);
+              }
+            } catch {
+              // Ignore stale or malformed commands without affecting other client UI.
+            }
+          }
+          if (pending.length > maxCommandLine) break;
+        }
+      } finally {
+        void reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+    } catch {
+      // Reconnect after brief transport interruptions without periodic polling.
+    } finally {
+      window.clearTimeout(initialTimeout);
+      if (stream === connection) {
+        stream = null;
+        if (enabledLifetime && retryCount < 2) {
+          retryTimer = window.setTimeout(() => {
+            retryTimer = 0;
+            void receiveCommands();
+          }, ++retryCount * 1000);
+        }
+      }
+    }
+  }
+
+  function onActivate() {
+    queueView();
+    if (document.visibilityState === "hidden") return;
+    openPendingSession();
+    queueTheme();
+    if (!stream && !retryTimer) {
+      retryCount = 0;
+      void receiveCommands();
+    }
+  }
+
+  function onConnectionReset() {
+    if (!enabledLifetime) return;
+    stream?.abort();
+    stream = null;
+    window.clearTimeout(retryTimer);
+    retryTimer = retryCount = 0;
+    void receiveCommands();
+  }
+
+  function configure(enabled) {
+    if (enabled === Boolean(enabledLifetime)) return;
+    if (!enabled) {
+      enabledLifetime.abort();
+      enabledLifetime = null;
+      stream?.abort();
+      stream = null;
+      window.clearTimeout(viewTimer);
+      window.clearTimeout(retryTimer);
+      window.clearTimeout(themeTimer);
+      window.removeEventListener("focus", onActivate);
+      window.removeEventListener("blur", onActivate);
+      document.removeEventListener("visibilitychange", onActivate);
+      viewTimer = retryTimer = retryCount = nextViewAt = 0;
+      releaseList?.();
+      releaseList = undefined;
+      releaseWorkspaces?.();
+      releaseWorkspaces = undefined;
+      releasePanel?.();
+      releasePanel = undefined;
+      releaseCatalog?.();
+      releaseCatalog = undefined;
+      indexModelNames();
+      releaseTheme?.();
+      releaseTheme = undefined;
+      releaseConnectionReset?.();
+      releaseConnectionReset = undefined;
+      releaseInteractions?.();
+      releaseInteractions = undefined;
+      watchInteraction("");
+      draftFocus = "";
+      draftLease = "";
+      for (const entry of composerDrafts.values()) releaseComposerDraft(entry);
+      bindModel("");
+      viewId = lastView = "";
+      pendingSession = null;
+      openedNavigation.clear();
+      viewInFlight = viewDirty = false;
+      themeInFlight = themeDirty = false;
+      themeTimer = 0;
+      lastTheme = "";
+      return;
+    }
+    enabledLifetime = new AbortController();
+    releaseList = list?.subscribe(() => {
+      openPendingSession();
+      queueView();
+      refreshInteraction();
+      pruneComposerDrafts();
+    });
+    releaseWorkspaces = workspaces?.subscribe(() => {
+      openPendingSession();
+      queueView();
+      refreshInteraction();
+      pruneComposerDrafts();
+    });
+    releasePanel = mainPanel?.subscribe(queueView);
+    releaseCatalog = modelCatalog?.subscribe(queueView);
+    releaseTheme = appearance.subscribe(queueTheme);
+    releaseInteractions = uiSession?.sessionStatus?.subscribe(() => {
+      refreshInteraction();
+      queueView();
+    });
+    releaseConnectionReset = ctx.on?.("connection/reset", onConnectionReset);
+    window.addEventListener("focus", onActivate);
+    window.addEventListener("blur", onActivate);
+    document.addEventListener("visibilitychange", onActivate);
+    queueView();
+    queueTheme();
+    void receiveCommands();
+  }
+
+  async function updateFromHost(method, payload, error) {
+    if (state.busy || lifetime.signal.aborted) return;
+    publish({ busy: true, error: "" });
+    try {
+      const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(5000)]);
+      const response = await request(method, payload, signal);
+      if (!response.ok) throw new Error("Live Window settings unavailable");
+      const result = await response.json();
+      if (result?.ok !== true || typeof result.value?.supported !== "boolean" || typeof result.value.enabled !== "boolean") {
+        throw new Error("Invalid Live Window settings");
+      }
+      if (lifetime.signal.aborted) return;
+      const { supported, enabled } = result.value;
+      configure(supported && enabled);
+      publish({
+        supported, enabled: supported && enabled,
+        autoCollapse: result.value.autoCollapse !== false,
+        reducedMotion: result.value.reducedMotion === true,
+        showDetails: result.value.showDetails !== false,
+        shape: ["pill", "notch", "minimal"].includes(result.value.shape) ? result.value.shape : "pill",
+        collapsedDisplay: ["amount", "status", "title", "detail"].includes(result.value.collapsedDisplay) ? result.value.collapsedDisplay : "amount",
+        completionSound: result.value.completionSound === true,
+        completionFlash: result.value.completionFlash !== false,
+        busy: false, error: supported && enabled && result.value.error ? "launch" : "",
+      });
+      queueView();
+    } catch {
+      publish({ error, busy: false });
+    }
+  }
+
+  const load = () => updateFromHost("companion-get", {}, "load");
+  void load();
+  return {
+    load,
+    getSnapshot: () => state,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    setPreference: (key, value) => state[key] === value ? Promise.resolve() : updateFromHost("companion-set", { [key]: value }, "save"),
+    dispose() {
+      configure(false);
+      lifetime.abort();
+      listeners.clear();
+    },
+  };
+}

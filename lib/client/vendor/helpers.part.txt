@@ -1,0 +1,76 @@
+function liveInteractionText(text) {
+  return typeof text === "string" ? text : "";
+}
+
+function liveInteractionDefinition(pending) {
+  if (!pending || typeof pending.key !== "string" || typeof pending.answer !== "function") return null;
+  if (pending.kind === "approval") {
+    if (pending.answerable !== true || !pending.toolName) return null;
+    const detail = liveInteractionText(pending.displayReason?.[document.documentElement.lang] ?? pending.displayReason?.zh ?? pending.reason ?? pending.displayReason?.en);
+    // A request without a correlated operation needs the original reason to be reviewable here.
+    if (!pending.callId && !detail.trim()) return null;
+    return { card: { key: pending.key, kind: "approval", title: `工具审批 · ${pending.toolName}`, detail,
+      questions: [], callId: pending.callId, toolName: pending.toolName }, settle: decision => pending.answer(decision === "allow" ? "allowed-once" : "rejected") };
+  }
+  if (pending.kind !== "question" && pending.kind !== "plan-review") return null;
+  const snapshot = pending.snapshot?.();
+  if (!snapshot || snapshot.closed || !["waterfall", "rpc"].includes(snapshot.channel) || pending.review !== undefined ||
+    !Array.isArray(pending.questions) || pending.questions.length < 1 || pending.questions.length > 8) return null;
+  const items = pending.questions;
+  if (items.some(item => !item || typeof item.id !== "string" || typeof item.question !== "string" ||
+    (item.options && (!Array.isArray(item.options) || item.options.length > 12)))) return null;
+  const fixed = items[0];
+  const intent = fixed.intent;
+  const optionView = option => ({ label: liveInteractionText(option?.label), detail: liveInteractionText(option?.description) });
+  if (items.length === 1 && (pending.kind === "plan-review" || intent?.kind === "approval")) {
+    const kind = pending.kind === "plan-review" ? "plan" : "approval";
+    const allow = fixed.options?.find(item => item.label === intent?.approve);
+    const planSkip = kind === "plan" ? fixed.options?.find(item => item !== allow && /^(?:skip|跳过)$/i.test(liveInteractionText(item?.label).trim())) : null;
+    const revise = kind === "plan" && typeof pending.dismiss === "function" && pending.dismissal === "cancel" && snapshot.channel === "waterfall";
+    const reject = fixed.options?.find(item => kind === "plan" ? item !== allow && item !== planSkip : item.label === intent?.reject);
+    if (!allow || (kind === "approval" && !reject) || fixed.multiSelect) return null;
+    const detail = liveInteractionText(fixed.detail ?? intent?.display?.detail?.zh ?? intent?.display?.detail?.en);
+    if (kind === "plan" && !detail.trim()) return null;
+    const title = liveInteractionText(intent?.display?.question?.zh ?? fixed.question);
+    const choices = [allow, reject].filter(Boolean).map(optionView);
+    const skip = kind === "approval" ? "approvalQuestion" : planSkip ? "planChoice" : revise ? "revise" : undefined;
+    return {
+      card: { key: pending.key, kind, title, detail, skip, questions: [{ id: fixed.id, title, detail: "", multiple: false, custom: false, options: choices }] },
+      settle(decision) {
+        if (decision === "skip" && skip === "approvalQuestion") return pending.answer({ answers: [{ id: fixed.id, selected: [] }] });
+        if (decision === "revise" && skip === "revise") return pending.dismiss();
+        const option = decision === "allow" ? allow : decision === "reject" ? reject : decision === "skip" ? planSkip : null;
+        if (!option) throw new Error("Unavailable decision");
+        return pending.answer({ answers: [{ id: fixed.id, selected: [option.label] }] });
+      },
+    };
+  }
+  if (items.some(item => item.intent?.kind === "approval" || item.intent?.kind === "plan-review")) return null;
+  const questions = items.map(item => ({ id: item.id, title: item.question, detail: liveInteractionText(item.detail),
+    multiple: item.multiSelect === true, custom: true, options: (item.options ?? []).map(optionView) }));
+  return { card: { key: pending.key, kind: "question", title: "待回答的问题", detail: "", questions }, settle: answers => pending.answer({ answers }) };
+}
+
+function liveQuestionAnswers(cards, input) {
+  if (!Array.isArray(input) || input.length !== cards.length) return null;
+  const seen = new Set();
+  const answers = [];
+  for (const item of input) {
+    const question = cards.find(card => card.id === item?.id);
+    if (!question || seen.has(question.id) || !Array.isArray(item.selected) || item.selected.length > question.options.length) return null;
+    seen.add(question.id);
+    if (item.custom != null && typeof item.custom !== "string") return null;
+    const custom = typeof item.custom === "string" ? item.custom.trim() : "";
+    if (custom.length > 4000 || (custom && !question.custom)) return null;
+    const indices = new Set(item.selected);
+    if (indices.size !== item.selected.length || [...indices].some(index => !Number.isInteger(index) || index < 0 || index >= question.options.length)) return null;
+    if (item.skipped === true) {
+      if (indices.size || custom) return null;
+      answers.push({ id: question.id, selected: [] });
+      continue;
+    }
+    if ((!indices.size && !custom) || (!question.multiple && indices.size + Number(!!custom) > 1)) return null;
+    answers.push({ id: question.id, selected: [...indices].map(index => question.options[index].label), ...(custom ? { custom } : {}) });
+  }
+  return answers;
+}

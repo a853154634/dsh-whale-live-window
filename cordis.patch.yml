@@ -1,0 +1,11 @@
+# 鲸梦实况窗（独立插件）
+# 与 dsh-whale-dream 主题包互不依赖：主题可以单独卸载，实况窗照常工作。
+#
+# 配置项（都可以在「设置 → 实况窗」的宿主设置里改，改完不用重启 DSH）：
+#   debug       —— 把最后一次状态包写到插件数据目录，便于排查通信问题
+#   executable  —— 覆盖原生程序绝对路径；留空 = 用本包 bin/ 里自带的那个
+#   autoStart   —— DSH 启动后自动打开实况窗
+#   showBalance —— 实况窗是否显示余额与费用
+- insert:
+    - id: whale-live-window
+      name: 'dsh-whale-live-window'

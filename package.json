@@ -1,0 +1,81 @@
+{
+  "name": "dsh-whale-live-window",
+  "version": "1.1.0",
+  "description": "鲸梦实况窗独立插件：把 DSH 的会话进展、待审批请求、草稿与完成提醒投到桌面顶部的原生实况窗，并按渠道分派显示余额与费用。",
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "icon": "./assets/icon.svg",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client/index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./assets/icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "assets",
+    "bin",
+    "locale",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "live-window",
+    "whale",
+    "notch",
+    "companion",
+    "desktop"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-general",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.19.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node scripts/client-activation.mjs && node scripts/settings-panel.mjs && node scripts/host-route.mjs && node scripts/ledger.mjs && node scripts/usage-tracking.mjs && node scripts/usage-live.mjs && node scripts/completion-retention.mjs",
+    "check": "node --check lib/index.js && node --check lib/client/index.js && node --check lib/host/balance-sources.js && node --check lib/host/usage-tracker.js && node --check lib/host/usage-source.js && npm test",
+    "probe": "node scripts/window-probe.mjs"
+  }
+}
