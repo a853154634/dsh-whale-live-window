@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
   metadata: write
 
 jobs:
@@ -18,18 +17,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          set -x
-          curl -sS -X PUT \
+          echo "repo=${GH_REPO}"
+          curl -sS -w "\nHTTP %{http_code}\n" -X PUT \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GH_REPO}/topics" \
             -d '{"names":["dsh-plugin","deepseek-harness","dsh","live-window","whale","desktop","ui-skins"]}'
-          echo
-          curl -sS -X PATCH \
+          curl -sS -w "\nHTTP %{http_code}\n" -X PATCH \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GH_REPO}" \
             -d '{"description":"Whale Live Window - a native desktop live window for DeepSeek Harness: session progress, approval requests, drafts and completion notices, plus per-channel balance and cost.","homepage":"https://github.com/a853154634/dsh-whale-live-window#readme"}'
-          echo
