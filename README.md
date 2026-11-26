@@ -54,11 +54,16 @@ node scripts/window-probe.mjs
 | --- | --- |
 | 配色皮肤 | 跟随 DSH / 经典 / 奶油 / 毛玻璃·浅 / 毛玻璃·深。 |
 | 明暗模式 | 跟随 DSH / 浅色 / 深色。选了「跟随 DSH」皮肤时这项不可改（配色整体来自 DSH）。 |
+| 不透明度 | 25-100%，越小越透，能看见后面的桌面。**每套皮肤各自记住一个值**。仅 Windows 可用。 |
 
 皮肤配色取自岛仔灵动岛的真实常量（奶油纸 `#FFF3E4` 墨 `#2E2016` 强调 `#F08A24`，
 毛玻璃强调 `#0A70E6` 等），每种皮肤都备了浅色与深色两套，所以强制明暗不会出现
 「深底深字」。原生窗口只有一条四色通道（`--theme=scheme,accent,surface,foreground`），
 所以皮肤最终就是这四个值。
+
+不透明度靠 Windows 的分层窗口实现（`SetLayeredWindowAttributes`）：原生程序自己
+不画 alpha，所以由插件在宿主侧施加。整窗变淡时文字也会跟着淡，插件会按淡的程度
+补偿前景色，保证还能看清。详见 [docs/SKINS.md](docs/SKINS.md)。
 
 **宿主设置**（写进 profile 的 `cordis.patch.yml`，改完不用重启 DSH）：
 
@@ -80,6 +85,8 @@ node scripts/window-probe.mjs
     showBalance: true
     skin: follow        # follow | classic | cream | glass_light | glass_dark
     themeMode: follow   # follow | light | dark
+    opacity: 100        # 25-100，全局不透明度（越小越透）
+    skinOpacitys: {}    # 每套皮肤各自的不透明度：{ cream: 85, ... }
 ```
 
 ## 安装

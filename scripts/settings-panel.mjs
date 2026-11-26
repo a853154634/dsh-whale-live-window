@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
 
 /* 宿主下发的配置：测试可以改它来模拟不同的选择。 */
 let hostConfig = { skin: 'cream', themeMode: 'follow' };
@@ -32,6 +33,7 @@ globalThis.window = {
                 { id: 'light', label: { zh: '浅色', en: 'Light' } },
                 { id: 'dark', label: { zh: '深色', en: 'Dark' } },
               ],
+              opacity: { supported: true, min: 25, max: 100, current: 75 },
             },
           },
         }),
@@ -277,6 +279,76 @@ await check('following the DSH skin pins the light/dark control to "follow"', as
   if (follow.pressed !== true) throw new Error('the follow option must be the selected one');
   if (follow.disabled !== true) throw new Error('the mode control must be disabled while following DSH');
   hostConfig = { skin: 'cream', themeMode: 'follow' };
+});
+
+await check('the panel renders the opacity slider', async () => {
+  const rendered = deepRender(Panel({}));
+  const sliders = [];
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'input' && node.props?.type === 'range') sliders.push(node.props);
+    const children = node.props?.children;
+    if (Array.isArray(children)) children.forEach(visit);
+    else if (children && typeof children === 'object') visit(children);
+  };
+  visit(rendered);
+  if (!sliders.length) throw new Error('the opacity slider is missing');
+  const slider = sliders[0];
+  assert.equal(slider.min, 25, 'the slider honours the host range');
+  assert.equal(slider.max, 100);
+  assert.equal(slider.step, 5);
+  assert.equal(typeof slider.value, 'number', 'the slider shows the current value');
+  assert.equal(slider['aria-label'], '不透明度', 'the slider needs an accessible name');
+});
+
+await check('the opacity slider is hidden when the platform cannot do it', async () => {
+  /* 透明度是 Win32 分层窗口的特性，别的平台没有 —— 面板不能给一个
+   * 按了没反应的滑块。 */
+  const fresh = [];
+  const freshCtx = {
+    get: () => undefined,
+    on: () => () => {},
+    effect: (f) => { f(); return () => {}; },
+    slots: { inject: (n, run) => run(), register: (o, c) => { fresh.push({ o, c }); return () => {}; } },
+    locale: { register: () => {}, bind: () => () => 'zh' },
+    theme: { getTheme: () => ({ active: { colorScheme: 'dark', tokens: {} } }) },
+  };
+  /* 让宿主这次说「不支持」。 */
+  const originalFetch = globalThis.window.fetch;
+  globalThis.window.fetch = async (url, options) => {
+    const method = options && options.body ? JSON.parse(options.body).method : '';
+    if (method === 'live-window-config-get') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          ok: true,
+          value: {
+            config: hostConfig, writable: true,
+            catalog: { skins: [], themeModes: [], opacity: { supported: false, min: 25, max: 100, current: 100 } },
+          },
+        }),
+        body: null, arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    }
+    return originalFetch(url, options);
+  };
+  try {
+    exports.apply(freshCtx);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const rendered = deepRender(fresh[0].c({}));
+    let found = false;
+    const visit = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (node.type === 'input' && node.props?.type === 'range') found = true;
+      const children = node.props?.children;
+      if (Array.isArray(children)) children.forEach(visit);
+      else if (children && typeof children === 'object') visit(children);
+    };
+    visit(rendered);
+    if (found) throw new Error('the opacity slider must be hidden when unsupported');
+  } finally {
+    globalThis.window.fetch = originalFetch;
+  }
 });
 
 if (failures) { console.error('\n' + failures + ' failed'); process.exitCode = 1; }

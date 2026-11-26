@@ -67,14 +67,71 @@ light / dark 主题 `tokens` 是空的（配色全在样式表里），只读快
 （浅色 `rgb(65,118,230)` / 深色 `rgb(86,134,254)`），而不是 `--dsw-alias-brand-primary`
 ——后者在 light / dark 两套里分别是近黑与近白，直接当强调色会让实况窗没有颜色感。
 
+## 不透明度（每个皮肤各自一个值）
+
+原生窗口**不画 alpha**：它把 theme 的 surface 色画成实心底板，主题协议
+（`--theme=scheme,accent,surface,foreground`）也只认 6 位 RGB，传 8 位带 alpha 的
+hex 会被拒绝（实测回落到默认色）。
+
+但 Windows 允许给窗口加 `WS_EX_LAYERED` 样式，再用 `SetLayeredWindowAttributes`
+整窗调节不透明度 —— 实测有效：
+
+| alpha | 胶囊内部像素（surface `#7A1FA2`，背景是 DSH 界面） |
+| --- | --- |
+| 255 | `77,107,254` |
+| 200 | `66,90,205` |
+| 150 | `57,75,160` |
+| 100 | `48,59,116` |
+| 60 | `40,46,80` |
+| 20 | `33,34,44` |
+
+单调变淡，背景按比例透进来。
+
+### 实现
+
+Node 没有内置 Win32 绑定，本插件又不引入原生依赖，所以用
+`lib/host/opacity-helper.ps1`：一个常驻的 PowerShell 助手，启动时用 `Add-Type`
+编译一次 Win32 互操作，之后走 stdin/stdout 的 JSON 行协议。拖动滑块时只是一次
+IPC 往返，不是每次起进程。
+
+助手做两件事：
+
+1. 按 **pid** 找到实况窗主窗口（实况窗进程有 8 个顶层窗口：IME、GL pbuffer、
+   隐藏辅助窗……，只有一个是真的）。
+2. 补上 `WS_EX_LAYERED` 样式，再调 `SetLayeredWindowAttributes`。
+   **必须先补样式** —— 该 API 要求窗口已带这个样式，原生窗口没有，直接调会返回
+   `False`。
+
+### 两个要记住的限制
+
+1. **文字会跟着一起变淡**：alpha 作用于整窗。窗口变淡后纯白字在浅色背景上会
+   看不清，所以 `skins.js` 的 `withOpacityCompensation` 按淡的程度调整前景色
+   （深底浅字场景往底色方向压，浅底深字场景提亮）。
+2. **只改模糊底板窗口没用**：实况窗另有一个 `DaozaiGlassBackdrop` 模糊底板窗口，
+   但不透明底板是主窗口自己画的，所以 alpha 只能加在主窗口上。
+
+### 配置
+
+| 配置 | 说明 |
+| --- | --- |
+| `opacity` | 全局不透明度（25-100）。某套皮肤没有单独的值时用它。 |
+| `skinOpacitys` | 每套皮肤各自的不透明度（`{ [skinId]: 25-100 }`）。切皮肤时用各自的那个。 |
+
+默认值：经典与奶油 100（不透明），毛玻璃·浅与毛玻璃·深 85（天生就该透一点）。
+
+下限是 25%：再低文字基本看不见了。
+
 ## 生效路径
 
 ```
 设置面板改配色 → POST /live-window/api (live-window-config-set)
   → 宿主 configEditor 写进 profile 的 cordis.patch.yml
-  → companion.refreshSkin() 重算最终配色
+  → companion.refreshSkin() 重算最终配色（含文字补偿）
   → refresh() 把新 theme 写进 state 包
   → 原生窗口收到新的四元组并重绘
+
+设置面板改不透明度 → 同一条路
+  → companion.applyOpacity() → 助手 → SetLayeredWindowAttributes
 ```
 
 配置字段是 volatile 的：改完**不用重启 DSH**，Loader 原地更新引用即可。
@@ -83,7 +140,7 @@ light / dark 主题 `tokens` 是空的（配色全在样式表里），只读快
 ## 验证
 
 ```powershell
-npm test                      # 9 组测试：skins.mjs（纯逻辑）+ skin-window.mjs（接线）
+npm test                             # 10 组测试：skins / skin-window / opacity
 node scripts/skin-window-probe.mjs   # 人工联调：真窗口逐个皮肤换色
 ```
 
