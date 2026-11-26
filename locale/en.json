@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Whale Live Window",
-    "description": "Puts DSH conversations, approval requests, drafts and completion notices into a native live window on top of your desktop: drag it along the top edge to switch conversations, reply in place, and handle approvals — the window's actions run back in DSH. Balance and cost are resolved per channel (channel-pack credits, OpenRouter balance, DeepSeek balance, or per-minute requests on free channels), and the cost counter counts this conversation's requests including subagents. Configure it under Settings → Live Window: window shape, what the collapsed window shows, auto-collapse, motion, completion chime and flash, conversation details, plus host options (open automatically at startup, show balance and cost, debug mode).",
+    "description": "Puts DSH conversations, approval requests, drafts and completion notices into a native live window on top of your desktop: drag it along the top edge to switch conversations, reply in place, and handle approvals — the window's actions run back in DSH. Balance and cost are resolved per channel (channel-pack credits, OpenRouter balance, DeepSeek balance, or per-minute requests on free channels), and the cost counter counts this conversation's requests including subagents. Configure it under Settings → Live Window: window shape, what the collapsed window shows, auto-collapse, motion, completion chime and flash, conversation details, the colour skin (follow DSH, or a fixed Classic / Cream / Glass light / Glass dark skin modelled on the island app's palette) with its own light/dark mode, plus host options (open automatically at startup, show balance and cost, debug mode).",
     "detail": "docs/DETAIL.md"
   }
 }

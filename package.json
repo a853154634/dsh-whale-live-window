@@ -1,7 +1,7 @@
 {
   "name": "dsh-whale-live-window",
-  "version": "1.1.2",
-  "description": "鲸梦实况窗独立插件：把 DSH 的会话进展、待审批请求、草稿与完成提醒投到桌面顶部的原生实况窗，并按渠道分派显示余额与费用。",
+  "version": "1.2.0",
+  "description": "鲸梦实况窗独立插件：把 DSH 的会话进展、待审批请求、草稿与完成提醒投到桌面顶部的原生实况窗，并按渠道分派显示余额与费用。配色参照岛仔灵动岛：可跟随 DSH 主题，也可固定成经典 / 奶油 / 毛玻璃皮肤。",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
@@ -38,7 +38,10 @@
     "whale",
     "notch",
     "companion",
-    "desktop"
+    "desktop",
+    "theme",
+    "skin",
+    "island"
   ],
   "engines": {
     "node": ">=22.13.0"
@@ -80,8 +83,9 @@
     }
   },
   "scripts": {
-    "test": "node scripts/client-activation.mjs && node scripts/settings-panel.mjs && node scripts/host-route.mjs && node scripts/ledger.mjs && node scripts/usage-tracking.mjs && node scripts/usage-live.mjs && node scripts/completion-retention.mjs",
-    "check": "node --check lib/index.js && node --check lib/client/index.js && node --check lib/host/balance-sources.js && node --check lib/host/usage-tracker.js && node --check lib/host/usage-source.js && npm test",
-    "probe": "node scripts/window-probe.mjs"
+    "test": "node scripts/client-activation.mjs && node scripts/settings-panel.mjs && node scripts/host-route.mjs && node scripts/skins.mjs && node scripts/skin-window.mjs && node scripts/ledger.mjs && node scripts/usage-tracking.mjs && node scripts/usage-live.mjs && node scripts/completion-retention.mjs",
+    "check": "node --check lib/index.js && node --check lib/client/index.js && node --check lib/host/skins.js && node --check lib/host/balance-sources.js && node --check lib/host/usage-tracker.js && node --check lib/host/usage-source.js && npm test",
+    "probe": "node scripts/window-probe.mjs",
+    "probe:skin": "node scripts/skin-window-probe.mjs"
   }
 }

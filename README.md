@@ -28,6 +28,8 @@ node scripts/window-probe.mjs
 - 把窗口的动作（切换/打开会话、发回复、处理审批）转回 DSH 执行。
 - 记住形状、收起内容、自动收起、精简动效、提示音、顶部位置与所在显示器。
 - 按渠道分派显示余额，费用栏按**请求次数**统计本对话（含子代理）的消耗。
+- **配色皮肤**：参照[岛仔灵动岛](https://github.com/)的配色模型，可跟随 DSH 主题，
+  也可固定成经典 / 奶油 / 毛玻璃·浅 / 毛玻璃·深；明暗也能单独固定。
 
 ## 设置
 
@@ -45,6 +47,18 @@ node scripts/window-probe.mjs
 | 完成提示音 | 未查看的会话完成时响一声，可试听。 |
 | 完成闪烁提醒 | 完成后轻闪，查看会话后停止。 |
 | 显示会话详情 | 关掉后隐藏回复预览、标题、模型和用量。 |
+
+**配色**（写在 profile 配置里，改完不用重启 DSH，窗口立刻换色）：
+
+| 选项 | 说明 |
+| --- | --- |
+| 配色皮肤 | 跟随 DSH / 经典 / 奶油 / 毛玻璃·浅 / 毛玻璃·深。 |
+| 明暗模式 | 跟随 DSH / 浅色 / 深色。选了「跟随 DSH」皮肤时这项不可改（配色整体来自 DSH）。 |
+
+皮肤配色取自岛仔灵动岛的真实常量（奶油纸 `#FFF3E4` 墨 `#2E2016` 强调 `#F08A24`，
+毛玻璃强调 `#0A70E6` 等），每种皮肤都备了浅色与深色两套，所以强制明暗不会出现
+「深底深字」。原生窗口只有一条四色通道（`--theme=scheme,accent,surface,foreground`），
+所以皮肤最终就是这四个值。
 
 **宿主设置**（写进 profile 的 `cordis.patch.yml`，改完不用重启 DSH）：
 
@@ -64,6 +78,8 @@ node scripts/window-probe.mjs
     executable: ''      # 留空 = 用本包 bin/ 里自带的那个
     autoStart: false
     showBalance: true
+    skin: follow        # follow | classic | cream | glass_light | glass_dark
+    themeMode: follow   # follow | light | dark
 ```
 
 ## 安装

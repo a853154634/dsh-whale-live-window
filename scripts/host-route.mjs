@@ -83,6 +83,27 @@ await check('the config endpoint reports the current values', async () => {
   assert.equal(typeof c.autoStart, 'boolean');
   assert.equal(typeof c.showBalance, 'boolean');
   assert.equal(typeof c.executable, 'string');
+  /* 【本插件新增】配色皮肤与明暗模式 */
+  assert.equal(typeof c.skin, 'string');
+  assert.equal(typeof c.themeMode, 'string');
+  assert.equal(c.skin, 'follow', 'the default skin follows DSH');
+  assert.equal(c.themeMode, 'follow', 'the default mode follows DSH');
+});
+
+await check('the config endpoint ships the skin catalog for the settings panel', async () => {
+  const { json } = await call('live-window-config-get');
+  const catalog = json.value.catalog;
+  assert.ok(catalog, 'no catalog in the response');
+  assert.ok(Array.isArray(catalog.skins) && catalog.skins.length > 0, 'no skins in the catalog');
+  assert.ok(Array.isArray(catalog.themeModes) && catalog.themeModes.length > 0, 'no theme modes in the catalog');
+  for (const skin of catalog.skins) {
+    assert.ok(skin.id, 'a skin has no id');
+    assert.ok(skin.label?.zh && skin.label?.en, 'skin ' + skin.id + ' is not bilingual');
+    assert.ok(skin.description?.zh && skin.description?.en, 'skin ' + skin.id + ' has no bilingual description');
+  }
+  for (const mode of catalog.themeModes) {
+    assert.ok(mode.id && mode.label?.zh && mode.label?.en, 'theme mode is not bilingual');
+  }
 });
 
 await check('a config write without a config editor is refused, not faked', async () => {
